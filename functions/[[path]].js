@@ -1,17 +1,115 @@
+const DEFAULT_REGISTRY_KEY = "dockerhub";
+const GAR_HOST_PATTERN = /^[a-z0-9-]+-docker\.pkg\.dev$/;
+
 const REGISTRIES = {
   dockerhub: {
+    displayName: "Docker Hub",
     upstream: "registry-1.docker.io",
     tokenHost: "auth.docker.io",
     authService: "registry.docker.io",
+    routePrefixes: ["dockerhub", "docker", "docker.io", "dhub"],
     hostHints: ["dhub", "dockerhub", "docker-hub", "docker"],
+    tokenPaths: ["/token", "/token/"],
   },
   ghcr: {
+    displayName: "GitHub Container Registry",
     upstream: "ghcr.io",
     tokenHost: "ghcr.io",
     authService: "ghcr.io",
+    routePrefixes: ["ghcr", "github", "github-container-registry"],
     hostHints: ["ghcr", "github-container-registry"],
+    tokenPaths: ["/token", "/token/"],
+  },
+  quay: {
+    displayName: "Quay.io",
+    upstream: "quay.io",
+    tokenHost: "quay.io",
+    authService: "quay.io",
+    routePrefixes: ["quay", "quay.io"],
+    hostHints: ["quay"],
+    tokenPaths: ["/v2/auth", "/v2/auth/"],
+  },
+  gcr: {
+    displayName: "Google Container Registry",
+    upstream: "gcr.io",
+    tokenHost: "gcr.io",
+    authService: "gcr.io",
+    routePrefixes: ["gcr", "gcr.io", "google"],
+    hostHints: ["gcr"],
+    tokenPaths: ["/v2/token", "/v2/token/"],
+  },
+  k8s: {
+    displayName: "Kubernetes Registry",
+    upstream: "registry.k8s.io",
+    tokenHost: "registry.k8s.io",
+    authService: "registry.k8s.io",
+    routePrefixes: ["k8s", "k8s.io", "registry.k8s.io", "kubernetes"],
+    hostHints: ["k8s"],
+  },
+  mcr: {
+    displayName: "Microsoft Container Registry",
+    upstream: "mcr.microsoft.com",
+    tokenHost: "mcr.microsoft.com",
+    authService: "mcr.microsoft.com",
+    routePrefixes: ["mcr", "microsoft", "mcr.microsoft.com"],
+    hostHints: ["mcr", "microsoft"],
+  },
+  ecr: {
+    displayName: "Amazon ECR Public",
+    upstream: "public.ecr.aws",
+    tokenHost: "public.ecr.aws",
+    authService: "public.ecr.aws",
+    routePrefixes: ["ecr", "aws", "public.ecr.aws"],
+    hostHints: ["ecr", "aws"],
+    tokenPaths: ["/token", "/token/"],
+  },
+  gitlab: {
+    displayName: "GitLab Container Registry",
+    upstream: "registry.gitlab.com",
+    tokenHost: "gitlab.com",
+    authService: "container_registry",
+    serviceAliases: ["container_registry"],
+    routePrefixes: ["gitlab", "gitlab.com", "registry.gitlab.com"],
+    hostHints: ["gitlab"],
+    tokenPaths: ["/jwt/auth", "/jwt/auth/"],
+  },
+  nvcr: {
+    displayName: "NVIDIA NGC",
+    upstream: "nvcr.io",
+    tokenHost: "nvcr.io",
+    authService: "nvcr.io",
+    routePrefixes: ["nvcr", "nvidia", "ngc"],
+    hostHints: ["nvcr", "nvidia"],
+    tokenPaths: ["/proxy_auth", "/proxy_auth/"],
+  },
+  lscr: {
+    displayName: "LinuxServer.io",
+    upstream: "lscr.io",
+    tokenHost: "ghcr.io",
+    authService: "ghcr.io",
+    routePrefixes: ["lscr", "linuxserver", "linuxserver.io"],
+    hostHints: ["lscr", "linuxserver"],
+    tokenPaths: ["/token", "/token/"],
+  },
+  redhat: {
+    displayName: "Red Hat Registry",
+    upstream: "registry.access.redhat.com",
+    tokenHost: "registry.access.redhat.com",
+    authService: "registry.access.redhat.com",
+    routePrefixes: ["redhat", "redhat-access", "registry.access.redhat.com"],
+    hostHints: ["redhat"],
   },
 };
+
+const DYNAMIC_ROUTES = [
+  {
+    key: "gar",
+    displayName: "Google Artifact Registry",
+    routePrefixes: ["gar", "artifact", "artifact-registry", "pkg"],
+    hostPattern: GAR_HOST_PATTERN,
+    tokenPaths: ["/v2/token", "/v2/token/"],
+  },
+];
 
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -33,6 +131,33 @@ const HOP_BY_HOP_HEADERS = new Set([
 ]);
 
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const PREFIX_REGISTRIES = new Map();
+const SERVICE_REGISTRIES = new Map();
+const TOKEN_PATH_REGISTRIES = new Map();
+const DYNAMIC_PREFIXES = new Map();
+
+for (const [key, registry] of Object.entries(REGISTRIES)) {
+  registry.key = key;
+  for (const prefix of registry.routePrefixes || []) {
+    PREFIX_REGISTRIES.set(prefix.toLowerCase(), registry);
+  }
+  for (const service of getRegistryServices(registry)) {
+    if (!SERVICE_REGISTRIES.has(service)) {
+      SERVICE_REGISTRIES.set(service, registry);
+    }
+  }
+  for (const tokenPath of registry.tokenPaths || []) {
+    if (!TOKEN_PATH_REGISTRIES.has(tokenPath)) {
+      TOKEN_PATH_REGISTRIES.set(tokenPath, registry);
+    }
+  }
+}
+
+for (const route of DYNAMIC_ROUTES) {
+  for (const prefix of route.routePrefixes) {
+    DYNAMIC_PREFIXES.set(prefix.toLowerCase(), route);
+  }
+}
 
 export async function onRequest(context) {
   const { request, env, waitUntil } = context;
@@ -57,19 +182,27 @@ export async function onRequest(context) {
     return env.ASSETS.fetch(request);
   }
 
-  const registry = selectRegistry(requestUrl.hostname, env);
-  if (!registry) {
+  if (isRegistryPing(requestUrl.pathname)) {
+    return registryPingResponse(request.method);
+  }
+
+  const route = selectRoute(requestUrl, env);
+  if (route?.error) {
+    return json(route.error, route.status || 400);
+  }
+
+  if (!route) {
     return json(
       {
-        error: "registry_not_selected",
+        error: "registry_route_not_found",
         message:
-          "Set REGISTRY=dockerhub or REGISTRY=ghcr, or deploy this project with dockerhub/ghcr in the hostname.",
+          "Use Docker Hub at the root path or prefix another registry, for example /v2/ghcr/<owner>/<image>/...",
       },
-      500,
+      404,
     );
   }
 
-  const upstreamUrl = buildUpstreamUrl(requestUrl, registry);
+  const upstreamUrl = buildUpstreamUrl(requestUrl, route);
   const upstreamRequest = new Request(upstreamUrl, {
     method: request.method,
     headers: buildUpstreamHeaders(request.headers),
@@ -77,21 +210,22 @@ export async function onRequest(context) {
   });
 
   if (!shouldUseCache(request, upstreamUrl, env)) {
-    return withCors(await fetchAndNormalize(upstreamRequest, requestUrl, registry, env));
+    const response = await fetchAndNormalize(upstreamRequest, requestUrl, route, env);
+    return withCors(addProxyHeaders(response, route.registry, "BYPASS", upstreamUrl));
   }
 
   const cache = caches.default;
-  const cacheRequest = buildCacheRequest(request, upstreamUrl, registry);
+  const cacheRequest = buildCacheRequest(request, upstreamUrl, route.registry);
 
   if (request.method === "GET") {
     const cached = await cache.match(cacheRequest);
     if (cached) {
-      return withCors(addProxyHeaders(cached, registry, "HIT"));
+      return withCors(addProxyHeaders(cached, route.registry, "HIT"));
     }
   }
 
-  const upstreamResponse = await fetchAndNormalize(upstreamRequest, requestUrl, registry, env);
-  const response = addProxyHeaders(upstreamResponse, registry, "MISS", upstreamUrl);
+  const upstreamResponse = await fetchAndNormalize(upstreamRequest, requestUrl, route, env);
+  const response = addProxyHeaders(upstreamResponse, route.registry, "MISS", upstreamUrl);
 
   if (request.method === "GET" && isCacheableResponse(response)) {
     waitUntil(cache.put(cacheRequest, response.clone()));
@@ -100,38 +234,143 @@ export async function onRequest(context) {
   return withCors(response);
 }
 
-function selectRegistry(hostname, env) {
-  const explicit = String(env.REGISTRY || env.UPSTREAM_REGISTRY || "").trim().toLowerCase();
-  if (explicit) {
-    if (REGISTRIES[explicit]) return REGISTRIES[explicit];
-    const match = Object.values(REGISTRIES).find((registry) => registry.upstream === explicit);
-    if (match) return match;
+function selectRoute(requestUrl, env) {
+  const authRoute = selectAuthRoute(requestUrl, env);
+  if (authRoute) return authRoute;
+
+  const parts = splitPathname(requestUrl.pathname);
+  if (parts[0]?.toLowerCase() !== "v2") {
+    return null;
+  }
+
+  return selectV2Route(requestUrl, parts, env);
+}
+
+function selectAuthRoute(requestUrl, env) {
+  if (!isAuthRequest(requestUrl)) {
+    return null;
+  }
+
+  const service = normalizeRegistryValue(requestUrl.searchParams.get("service"));
+  const registry = findRegistryByService(service) || findRegistryByTokenPath(requestUrl.pathname);
+  const selected = registry || getDefaultRegistry(requestUrl.hostname, env);
+
+  return {
+    registry: selected,
+    upstreamHost: selected.tokenHost || selected.upstream,
+    upstreamPathname: requestUrl.pathname,
+    routePrefix: null,
+    kind: "auth",
+  };
+}
+
+function selectV2Route(requestUrl, parts, env) {
+  if (parts.length === 1) {
+    const registry = getDefaultRegistry(requestUrl.hostname, env);
+    return {
+      registry,
+      upstreamHost: registry.upstream,
+      upstreamPathname: "/v2/",
+      routePrefix: null,
+      kind: "registry",
+    };
+  }
+
+  const rawPrefix = parts[1];
+  const prefix = rawPrefix.toLowerCase();
+  const dynamicRoute = DYNAMIC_PREFIXES.get(prefix);
+  if (dynamicRoute) {
+    return selectDynamicV2Route(dynamicRoute, rawPrefix, parts);
+  }
+
+  const prefixedRegistry = PREFIX_REGISTRIES.get(prefix);
+  if (prefixedRegistry) {
+    const upstreamPathname = rewriteDockerHubOfficialImagePath(
+      buildPathFromParts(["v2", ...parts.slice(2)]),
+      prefixedRegistry,
+    );
+
+    return {
+      registry: prefixedRegistry,
+      upstreamHost: prefixedRegistry.upstream,
+      upstreamPathname,
+      routePrefix: rawPrefix,
+      kind: "registry",
+    };
+  }
+
+  const registry = getDefaultRegistry(requestUrl.hostname, env);
+  const upstreamPathname = rewriteDockerHubOfficialImagePath(requestUrl.pathname, registry);
+
+  return {
+    registry,
+    upstreamHost: registry.upstream,
+    upstreamPathname,
+    routePrefix: null,
+    kind: "registry",
+  };
+}
+
+function selectDynamicV2Route(dynamicRoute, rawPrefix, parts) {
+  const upstreamHost = normalizeRegistryValue(parts[2]);
+  if (!upstreamHost || !dynamicRoute.hostPattern.test(upstreamHost)) {
+    return {
+      status: 400,
+      error: {
+        error: "invalid_registry_route",
+        message: `${rawPrefix} routes require an allowed upstream host, for example /v2/${rawPrefix}/us-docker.pkg.dev/<project>/<repo>/<image>/...`,
+      },
+    };
+  }
+
+  const registry = buildDynamicRegistry(dynamicRoute, upstreamHost);
+  return {
+    registry,
+    upstreamHost,
+    upstreamPathname: buildPathFromParts(["v2", ...parts.slice(3)]),
+    routePrefix: rawPrefix,
+    dynamicHost: upstreamHost,
+    kind: "registry",
+  };
+}
+
+function isAuthRequest(requestUrl) {
+  if (requestUrl.searchParams.has("service") && requestUrl.searchParams.has("scope")) {
+    return true;
+  }
+  if (requestUrl.searchParams.has("service") && TOKEN_PATH_REGISTRIES.has(requestUrl.pathname)) {
+    return true;
+  }
+  if (TOKEN_PATH_REGISTRIES.has(requestUrl.pathname)) {
+    return !requestUrl.pathname.startsWith("/v2/") || requestUrl.searchParams.has("scope");
+  }
+  return requestUrl.pathname === "/proxy_auth" || requestUrl.pathname === "/proxy_auth/";
+}
+
+function getDefaultRegistry(hostname, env) {
+  const explicit = normalizeRegistryValue(
+    env.DEFAULT_REGISTRY || env.REGISTRY || env.UPSTREAM_REGISTRY || "",
+  );
+  const explicitRegistry = findRegistryByName(explicit);
+  if (explicitRegistry) {
+    return explicitRegistry;
   }
 
   const host = hostname.toLowerCase();
-  return Object.values(REGISTRIES).find((registry) =>
-    registry.hostHints.some((hint) => host.includes(hint)),
+  const hinted = Object.values(REGISTRIES).find((registry) =>
+    registry.hostHints?.some((hint) => host.includes(hint)),
   );
+
+  return hinted || REGISTRIES[DEFAULT_REGISTRY_KEY];
 }
 
-function buildUpstreamUrl(requestUrl, registry) {
+function buildUpstreamUrl(requestUrl, route) {
   const upstreamUrl = new URL(requestUrl.toString());
-  const upstreamHost = selectUpstreamHost(requestUrl.pathname, registry);
-
   upstreamUrl.protocol = "https:";
-  upstreamUrl.hostname = upstreamHost;
+  upstreamUrl.hostname = route.upstreamHost;
   upstreamUrl.port = "";
-  if (upstreamHost === registry.upstream) {
-    upstreamUrl.pathname = rewriteDockerHubOfficialImagePath(requestUrl.pathname, registry);
-  }
+  upstreamUrl.pathname = route.upstreamPathname;
   return upstreamUrl;
-}
-
-function selectUpstreamHost(pathname, registry) {
-  if (pathname === "/token") {
-    return registry.tokenHost || registry.upstream;
-  }
-  return registry.upstream;
 }
 
 function rewriteDockerHubOfficialImagePath(pathname, registry) {
@@ -139,18 +378,18 @@ function rewriteDockerHubOfficialImagePath(pathname, registry) {
     return pathname;
   }
 
-  const parts = pathname.split("/").filter(Boolean);
-  if (parts[0] !== "v2" || parts.length < 3) {
+  const parts = splitPathname(pathname);
+  if (parts[0]?.toLowerCase() !== "v2" || parts.length < 3) {
     return pathname;
   }
 
   const operationIndex = parts.findIndex((part) =>
-    ["manifests", "blobs", "tags"].includes(part),
+    ["manifests", "blobs", "tags"].includes(part.toLowerCase()),
   );
 
   if (operationIndex === 2) {
     parts.splice(1, 0, "library");
-    return `/${parts.map(encodePathPart).join("/")}`;
+    return buildPathFromParts(parts);
   }
 
   return pathname;
@@ -167,7 +406,7 @@ function buildUpstreamHeaders(headers) {
   return nextHeaders;
 }
 
-async function fetchAndNormalize(upstreamRequest, originalUrl, registry, env) {
+async function fetchAndNormalize(upstreamRequest, originalUrl, route, env) {
   const timeoutMs = Number(env.UPSTREAM_TIMEOUT_MS || 30000);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort("upstream_timeout"), timeoutMs);
@@ -192,8 +431,8 @@ async function fetchAndNormalize(upstreamRequest, originalUrl, registry, env) {
 
   const headers = new Headers(upstreamResponse.headers);
 
-  rewriteAuthenticateHeader(headers, originalUrl, registry);
-  rewriteLocationHeader(headers, originalUrl, registry);
+  rewriteAuthenticateHeader(headers, originalUrl, route.registry);
+  rewriteLocationHeader(headers, originalUrl, route);
   headers.set("Docker-Distribution-Api-Version", "registry/2.0");
 
   return new Response(upstreamResponse.body, {
@@ -208,32 +447,59 @@ function rewriteAuthenticateHeader(headers, originalUrl, registry) {
   if (!value) return;
 
   let rewritten = value;
-  for (const host of new Set([registry.upstream, registry.tokenHost].filter(Boolean))) {
+  for (const host of getRegistryHosts(registry)) {
     rewritten = rewritten
       .replaceAll(`https://${host}`, originalUrl.origin)
       .replaceAll(`http://${host}`, originalUrl.origin);
   }
 
-  rewritten = rewritten.replaceAll(
-    `service="${registry.upstream}"`,
-    `service="${registry.authService}"`,
-  );
+  if (registry.authService) {
+    rewritten = rewritten
+      .replaceAll(`service="${registry.upstream}"`, `service="${registry.authService}"`)
+      .replaceAll(`service=${registry.upstream}`, `service=${registry.authService}`);
+  }
 
   headers.set("WWW-Authenticate", rewritten);
 }
 
-function rewriteLocationHeader(headers, originalUrl, registry) {
+function rewriteLocationHeader(headers, originalUrl, route) {
   const value = headers.get("Location");
   if (!value) return;
 
-  let rewritten = value;
-  for (const host of new Set([registry.upstream, registry.tokenHost].filter(Boolean))) {
-    rewritten = rewritten
-      .replaceAll(`https://${host}`, originalUrl.origin)
-      .replaceAll(`http://${host}`, originalUrl.origin);
+  const rewritten = rewriteLocationUrl(value, originalUrl, route);
+  if (rewritten) {
+    headers.set("Location", rewritten);
+  }
+}
+
+function rewriteLocationUrl(value, originalUrl, route) {
+  let locationUrl;
+  try {
+    locationUrl = new URL(value);
+  } catch {
+    return value;
   }
 
-  headers.set("Location", rewritten);
+  const originalHost = locationUrl.hostname.toLowerCase();
+  const garRoute = DYNAMIC_ROUTES[0];
+
+  if (GAR_HOST_PATTERN.test(originalHost)) {
+    locationUrl.protocol = originalUrl.protocol;
+    locationUrl.host = originalUrl.host;
+    locationUrl.pathname = addDynamicV2Prefix(locationUrl.pathname, garRoute.routePrefixes[0], originalHost);
+    return locationUrl.toString();
+  }
+
+  if (!getRegistryHosts(route.registry).includes(originalHost)) {
+    return value;
+  }
+
+  locationUrl.protocol = originalUrl.protocol;
+  locationUrl.host = originalUrl.host;
+  if (route.kind === "registry" && route.routePrefix && locationUrl.pathname.startsWith("/v2/")) {
+    locationUrl.pathname = addStaticV2Prefix(locationUrl.pathname, route.routePrefix);
+  }
+  return locationUrl.toString();
 }
 
 function shouldUseCache(request, upstreamUrl, env) {
@@ -242,7 +508,7 @@ function shouldUseCache(request, upstreamUrl, env) {
     return false;
   }
 
-  if (request.headers.has("Range")) {
+  if (request.headers.has("Authorization") || request.headers.has("Range")) {
     return false;
   }
 
@@ -295,6 +561,7 @@ function addProxyHeaders(response, registry, cacheStatus, upstreamUrl = null) {
   const headers = new Headers(response.headers);
   const ttl = upstreamUrl ? getCacheTtl(upstreamUrl) : 0;
 
+  headers.set("X-Registry-Name", registry.displayName);
   headers.set("X-Registry-Upstream", registry.upstream);
   headers.set("X-Registry-Cache", cacheStatus);
 
@@ -316,7 +583,7 @@ function withCors(response) {
   headers.set("Access-Control-Allow-Headers", "Authorization, Accept, Content-Type, Range");
   headers.set(
     "Access-Control-Expose-Headers",
-    "Docker-Content-Digest, Docker-Distribution-Api-Version, Location, WWW-Authenticate, X-Registry-Cache, X-Registry-Upstream",
+    "Docker-Content-Digest, Docker-Distribution-Api-Version, Location, WWW-Authenticate, X-Registry-Cache, X-Registry-Name, X-Registry-Upstream",
   );
 
   return new Response(response.body, {
@@ -324,6 +591,25 @@ function withCors(response) {
     statusText: response.statusText,
     headers,
   });
+}
+
+function isRegistryPing(pathname) {
+  return pathname === "/v2" || pathname === "/v2/";
+}
+
+function registryPingResponse(method) {
+  return withCors(
+    new Response(method === "HEAD" ? null : "{}", {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Docker-Distribution-Api-Version": "registry/2.0",
+        "X-Registry-Name": "GitWarp",
+        "X-Registry-Upstream": "multi",
+        "X-Registry-Cache": "BYPASS",
+      },
+    }),
+  );
 }
 
 function acceptsHtml(request) {
@@ -342,8 +628,109 @@ function json(body, status = 200, headers = {}) {
   );
 }
 
+function getRegistryServices(registry) {
+  return [
+    registry.authService,
+    registry.upstream,
+    registry.tokenHost,
+    ...(registry.serviceAliases || []),
+  ]
+    .filter(Boolean)
+    .map(normalizeRegistryValue);
+}
+
+function getRegistryHosts(registry) {
+  return [...new Set([registry.upstream, registry.tokenHost].filter(Boolean).map(normalizeRegistryValue))];
+}
+
+function findRegistryByName(value) {
+  if (!value) return null;
+  if (REGISTRIES[value]) return REGISTRIES[value];
+  if (PREFIX_REGISTRIES.has(value)) return PREFIX_REGISTRIES.get(value);
+  return Object.values(REGISTRIES).find((registry) => getRegistryServices(registry).includes(value));
+}
+
+function findRegistryByService(service) {
+  if (!service) return null;
+  if (SERVICE_REGISTRIES.has(service)) {
+    return SERVICE_REGISTRIES.get(service);
+  }
+
+  const dynamicRoute = DYNAMIC_ROUTES.find((route) => route.hostPattern.test(service));
+  if (dynamicRoute) {
+    return buildDynamicRegistry(dynamicRoute, service);
+  }
+
+  return null;
+}
+
+function findRegistryByTokenPath(pathname) {
+  return TOKEN_PATH_REGISTRIES.get(pathname) || null;
+}
+
+function buildDynamicRegistry(dynamicRoute, upstreamHost) {
+  return {
+    key: `${dynamicRoute.key}:${upstreamHost}`,
+    displayName: `${dynamicRoute.displayName} (${upstreamHost})`,
+    upstream: upstreamHost,
+    tokenHost: upstreamHost,
+    authService: upstreamHost,
+    routePrefixes: dynamicRoute.routePrefixes,
+    tokenPaths: dynamicRoute.tokenPaths,
+  };
+}
+
+function normalizeRegistryValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+}
+
+function splitPathname(pathname) {
+  return pathname.split("/").filter(Boolean).map(decodePathPart);
+}
+
+function buildPathFromParts(parts) {
+  if (parts.length === 1 && parts[0].toLowerCase() === "v2") {
+    return "/v2/";
+  }
+  return `/${parts.map(encodePathPart).join("/")}`;
+}
+
+function addStaticV2Prefix(pathname, prefix) {
+  const parts = splitPathname(pathname);
+  if (parts[0]?.toLowerCase() !== "v2") {
+    return pathname;
+  }
+  if (parts[1]?.toLowerCase() === prefix.toLowerCase()) {
+    return pathname;
+  }
+  return buildPathFromParts(["v2", prefix, ...parts.slice(1)]);
+}
+
+function addDynamicV2Prefix(pathname, prefix, upstreamHost) {
+  const parts = splitPathname(pathname);
+  if (parts[0]?.toLowerCase() !== "v2") {
+    return pathname;
+  }
+  if (parts[1]?.toLowerCase() === prefix.toLowerCase() && parts[2]?.toLowerCase() === upstreamHost) {
+    return pathname;
+  }
+  return buildPathFromParts(["v2", prefix, upstreamHost, ...parts.slice(1)]);
+}
+
+function decodePathPart(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 function encodePathPart(value) {
-  return encodeURIComponent(decodeURIComponent(value));
+  return encodeURIComponent(decodePathPart(value));
 }
 
 function stableHash(value) {

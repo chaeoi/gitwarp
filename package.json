@@ -1,12 +1,10 @@
 {
-  "name": "cf-registry-accelerator",
+  "name": "gitwarp",
   "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev:dockerhub": "wrangler pages dev public --binding REGISTRY=dockerhub --compatibility-date=2026-05-27",
-    "dev:ghcr": "wrangler pages dev public --binding REGISTRY=ghcr --compatibility-date=2026-05-27",
-    "deploy:dockerhub": "wrangler pages deploy public --project-name dhub",
-    "deploy:ghcr": "wrangler pages deploy public --project-name ghcr"
+    "dev": "wrangler pages dev public --compatibility-date=2026-05-27",
+    "deploy": "wrangler pages deploy public --project-name gitwarp"
   }
 }
