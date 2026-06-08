@@ -1,5 +1,6 @@
 const DEFAULT_REGISTRY_KEY = "dockerhub";
 const GAR_HOST_PATTERN = /^(?:[a-z0-9-]+-)?docker\.pkg\.dev$/i;
+const BROKER_TOKEN = "gitwarp-anonymous";
 
 const REGISTRIES = {
   dockerhub: {
@@ -155,7 +156,12 @@ export async function onRequest(context) {
   }
 
   if (isRegistryPing(requestUrl.pathname)) {
-    return registryPingResponse(request.method);
+    return registryPingResponse(request, requestUrl);
+  }
+
+  const brokerToken = await maybeBrokerTokenResponse(request, requestUrl, env);
+  if (brokerToken) {
+    return brokerToken;
   }
 
   const route = selectRoute(requestUrl, env);
@@ -337,6 +343,9 @@ function buildUpstreamHeaders(headers) {
   const nextHeaders = new Headers();
   for (const [key, value] of headers.entries()) {
     const lowerKey = key.toLowerCase();
+    if (lowerKey === "authorization" && isBrokerAuthorization(value)) {
+      continue;
+    }
     if (!HOP_BY_HOP_HEADERS.has(lowerKey) && !lowerKey.startsWith("cf-")) {
       nextHeaders.set(key, value);
     }
@@ -531,9 +540,25 @@ function isRegistryPing(pathname) {
   return pathname === "/v2" || pathname === "/v2/";
 }
 
-function registryPingResponse(method) {
+function registryPingResponse(request, requestUrl) {
+  if (!request.headers.has("Authorization")) {
+    return withCors(
+      new Response(JSON.stringify({ errors: [{ code: "UNAUTHORIZED", message: "authentication required" }] }), {
+        status: 401,
+        headers: {
+          "Content-Type": "application/json",
+          "Docker-Distribution-Api-Version": "registry/2.0",
+          "WWW-Authenticate": `Bearer realm="${requestUrl.origin}/token",service="${requestUrl.hostname}"`,
+          "X-Registry-Name": "GitWarp",
+          "X-Registry-Upstream": "multi",
+          "X-Registry-Cache": "BYPASS",
+        },
+      }),
+    );
+  }
+
   return withCors(
-    new Response(method === "HEAD" ? null : "{}", {
+    new Response(request.method === "HEAD" ? null : "{}", {
       status: 200,
       headers: {
         "Content-Type": "application/json",
@@ -544,6 +569,159 @@ function registryPingResponse(method) {
       },
     }),
   );
+}
+
+async function maybeBrokerTokenResponse(request, requestUrl, env) {
+  if (!isBrokerTokenRequest(requestUrl)) {
+    return null;
+  }
+
+  const scopes = requestUrl.searchParams.getAll("scope").filter(Boolean);
+  if (scopes.length === 0) {
+    return brokerTokenResponse();
+  }
+
+  const brokerRequest = buildBrokerTokenRequest(requestUrl, scopes);
+  if (!brokerRequest) {
+    return brokerTokenResponse();
+  }
+
+  const upstreamRequest = new Request(brokerRequest.url, {
+    method: "GET",
+    headers: buildUpstreamHeaders(request.headers),
+    redirect: "follow",
+  });
+  const route = {
+    registry: brokerRequest.registry,
+    upstreamHost: brokerRequest.registry.tokenHost || brokerRequest.registry.upstream,
+    upstreamPathname: brokerRequest.url.pathname,
+    routePrefix: null,
+    kind: "auth",
+  };
+  const response = await fetchAndNormalize(upstreamRequest, requestUrl, route, env);
+  return withCors(addProxyHeaders(response, brokerRequest.registry, "BYPASS"));
+}
+
+function isBrokerTokenRequest(requestUrl) {
+  if (requestUrl.pathname !== "/token" && requestUrl.pathname !== "/token/") {
+    return false;
+  }
+  const service = normalizeRegistryValue(requestUrl.searchParams.get("service"));
+  return service === requestUrl.hostname.toLowerCase();
+}
+
+function brokerTokenResponse() {
+  return withCors(
+    new Response(
+      JSON.stringify({
+        token: BROKER_TOKEN,
+        access_token: BROKER_TOKEN,
+        expires_in: 300,
+        issued_at: new Date().toISOString(),
+      }),
+      {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Registry-Name": "GitWarp",
+          "X-Registry-Upstream": "multi",
+          "X-Registry-Cache": "BYPASS",
+        },
+      },
+    ),
+  );
+}
+
+function buildBrokerTokenRequest(requestUrl, scopes) {
+  const mappedScopes = [];
+  let registry = null;
+
+  for (const scope of scopes) {
+    const mapped = mapBrokerScope(scope);
+    if (!mapped) {
+      return null;
+    }
+    if (registry && registry.upstream !== mapped.registry.upstream) {
+      return null;
+    }
+    registry = mapped.registry;
+    mappedScopes.push(mapped.scope);
+  }
+
+  if (!registry?.tokenPaths?.length) {
+    return null;
+  }
+
+  const url = new URL(requestUrl.toString());
+  url.protocol = "https:";
+  url.hostname = registry.tokenHost || registry.upstream;
+  url.port = "";
+  url.pathname = registry.tokenPaths[0];
+  url.search = "";
+
+  for (const [key, value] of requestUrl.searchParams.entries()) {
+    if (key !== "service" && key !== "scope") {
+      url.searchParams.append(key, value);
+    }
+  }
+  url.searchParams.set("service", registry.authService);
+  for (const scope of mappedScopes) {
+    url.searchParams.append("scope", scope);
+  }
+
+  return { registry, url };
+}
+
+function mapBrokerScope(scope) {
+  const match = /^repository:([^:]+):(.+)$/.exec(scope);
+  if (!match) {
+    return null;
+  }
+
+  const mapped = mapRepositoryName(match[1]);
+  if (!mapped) {
+    return null;
+  }
+
+  return {
+    registry: mapped.registry,
+    scope: `repository:${mapped.name}:${match[2]}`,
+  };
+}
+
+function mapRepositoryName(name) {
+  const parts = name.split("/").filter(Boolean);
+  const prefix = parts[0]?.toLowerCase();
+
+  if (prefix && PREFIX_REGISTRIES.has(prefix)) {
+    const registry = PREFIX_REGISTRIES.get(prefix);
+    const upstreamName = rewriteDockerHubRepositoryName(parts.slice(1).join("/"), registry);
+    return upstreamName ? { registry, name: upstreamName } : null;
+  }
+
+  if (prefix && GAR_HOST_PATTERN.test(prefix)) {
+    const registry = buildDynamicRegistry(prefix);
+    const upstreamName = parts.slice(1).join("/");
+    return upstreamName ? { registry, name: upstreamName } : null;
+  }
+
+  const registry = REGISTRIES[DEFAULT_REGISTRY_KEY];
+  return { registry, name: rewriteDockerHubRepositoryName(name, registry) };
+}
+
+function rewriteDockerHubRepositoryName(name, registry) {
+  if (registry.upstream !== REGISTRIES.dockerhub.upstream) {
+    return name;
+  }
+  if (!name || name.includes("/")) {
+    return name;
+  }
+  return `library/${name}`;
+}
+
+function isBrokerAuthorization(value) {
+  return value.trim().toLowerCase() === `bearer ${BROKER_TOKEN}`;
 }
 
 function acceptsHtml(request) {
