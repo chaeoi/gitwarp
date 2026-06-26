@@ -133,7 +133,7 @@ for (const [key, registry] of Object.entries(REGISTRIES)) {
 }
 
 export async function onRequest(context) {
-  const { request, env, waitUntil } = context;
+  const { request, env } = context;
   const requestUrl = new URL(request.url);
 
   if (request.method === "OPTIONS") {
@@ -187,29 +187,9 @@ export async function onRequest(context) {
     redirect: "follow",
   });
 
-  if (!shouldUseCache(request, upstreamUrl, env)) {
-    const response = await fetchAndNormalize(upstreamRequest, requestUrl, route, env);
-    return withCors(addProxyHeaders(response, route.registry, "BYPASS", upstreamUrl));
-  }
-
-  const cache = caches.default;
-  const cacheRequest = buildCacheRequest(request, upstreamUrl, route.registry);
-
-  if (request.method === "GET") {
-    const cached = await cache.match(cacheRequest);
-    if (cached) {
-      return withCors(addProxyHeaders(cached, route.registry, "HIT"));
-    }
-  }
-
-  const upstreamResponse = await fetchAndNormalize(upstreamRequest, requestUrl, route, env);
-  const response = addProxyHeaders(upstreamResponse, route.registry, "MISS", upstreamUrl);
-
-  if (request.method === "GET" && isCacheableResponse(response)) {
-    waitUntil(cache.put(cacheRequest, response.clone()));
-  }
-
-  return withCors(response);
+  const cacheOptions = buildCacheOptions(request, upstreamUrl, route.registry, env);
+  const upstreamResponse = await fetchAndNormalize(upstreamRequest, requestUrl, route, env, cacheOptions);
+  return withCors(addProxyHeaders(upstreamResponse, route.registry, upstreamUrl));
 }
 
 function selectRoute(requestUrl, env) {
@@ -353,14 +333,18 @@ function buildUpstreamHeaders(headers) {
   return nextHeaders;
 }
 
-async function fetchAndNormalize(upstreamRequest, originalUrl, route, env) {
+async function fetchAndNormalize(upstreamRequest, originalUrl, route, env, cacheOptions) {
   const timeoutMs = Number(env.UPSTREAM_TIMEOUT_MS || 30000);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort("upstream_timeout"), timeoutMs);
   let upstreamResponse;
 
   try {
-    upstreamResponse = await fetch(upstreamRequest, { signal: controller.signal });
+    const init = { signal: controller.signal };
+    if (cacheOptions) {
+      init.cf = cacheOptions;
+    }
+    upstreamResponse = await fetch(upstreamRequest, init);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const upstreamHost = new URL(upstreamRequest.url).hostname;
@@ -445,17 +429,34 @@ function rewriteLocationUrl(value, originalUrl, route) {
   return locationUrl.toString();
 }
 
-function shouldUseCache(request, upstreamUrl, env) {
+function buildCacheOptions(request, upstreamUrl, registry, env) {
   const mode = String(env.CACHE_MODE || "public").toLowerCase();
   if (mode === "off" || mode === "bypass" || request.method !== "GET") {
-    return false;
+    return null;
   }
 
-  if (request.headers.has("Authorization") || request.headers.has("Range")) {
-    return false;
+  if (request.headers.has("Authorization")) {
+    return null;
   }
 
-  return getCacheTtl(upstreamUrl) > 0;
+  const ttl = getCacheTtl(upstreamUrl);
+  if (ttl <= 0) {
+    return null;
+  }
+
+  const cacheKey = new URL(upstreamUrl.toString());
+  cacheKey.hostname = `${registry.upstream}.cache.local`;
+
+  const accept = request.headers.get("Accept");
+  if (accept && upstreamUrl.pathname.includes("/manifests/")) {
+    cacheKey.searchParams.set("__accept", stableHash(accept));
+  }
+
+  return {
+    cacheEverything: true,
+    cacheTtl: ttl,
+    cacheKey: cacheKey.toString(),
+  };
 }
 
 function getCacheTtl(url) {
@@ -479,18 +480,6 @@ function getCacheTtl(url) {
   return 0;
 }
 
-function buildCacheRequest(request, upstreamUrl, registry) {
-  const cacheUrl = new URL(upstreamUrl.toString());
-  cacheUrl.hostname = `${registry.upstream}.cache.local`;
-
-  const accept = request.headers.get("Accept");
-  if (accept && upstreamUrl.pathname.includes("/manifests/")) {
-    cacheUrl.searchParams.set("__accept", stableHash(accept));
-  }
-
-  return new Request(cacheUrl.toString(), { method: "GET" });
-}
-
 function isCacheableResponse(response) {
   return (
     response.status >= 200 &&
@@ -500,15 +489,15 @@ function isCacheableResponse(response) {
   );
 }
 
-function addProxyHeaders(response, registry, cacheStatus, upstreamUrl = null) {
+function addProxyHeaders(response, registry, upstreamUrl = null) {
   const headers = new Headers(response.headers);
   const ttl = upstreamUrl ? getCacheTtl(upstreamUrl) : 0;
 
   headers.set("X-Registry-Name", registry.displayName);
   headers.set("X-Registry-Upstream", registry.upstream);
-  headers.set("X-Registry-Cache", cacheStatus);
+  headers.set("X-Registry-Cache", headers.get("CF-Cache-Status") || "DYNAMIC");
 
-  if (cacheStatus !== "BYPASS" && ttl > 0 && isCacheableResponse(response)) {
+  if (ttl > 0 && isCacheableResponse(response)) {
     headers.set("Cache-Control", `public, max-age=${ttl}`);
   }
 
@@ -599,7 +588,7 @@ async function maybeBrokerTokenResponse(request, requestUrl, env) {
     kind: "auth",
   };
   const response = await fetchAndNormalize(upstreamRequest, requestUrl, route, env);
-  return withCors(addProxyHeaders(response, brokerRequest.registry, "BYPASS"));
+  return withCors(addProxyHeaders(response, brokerRequest.registry));
 }
 
 function isBrokerTokenRequest(requestUrl) {
