@@ -1,6 +1,7 @@
 import { BROKER_TOKEN, DEFAULT_REGISTRY_KEY, GAR_HOST_PATTERN } from "./constants.js";
 import { rewriteDockerHubRepositoryName } from "./dockerhub.js";
 import { buildUpstreamHeaders, withCors } from "./http.js";
+import { isCurrentHostService } from "./public-url.js";
 import { PREFIX_REGISTRIES, REGISTRIES, buildDynamicRegistry, normalizeRegistryValue } from "./registries.js";
 import { addProxyHeaders, fetchAndNormalize } from "./upstream.js";
 
@@ -39,8 +40,7 @@ function isBrokerTokenRequest(requestUrl) {
   if (requestUrl.pathname !== "/token" && requestUrl.pathname !== "/token/") {
     return false;
   }
-  const service = normalizeRegistryValue(requestUrl.searchParams.get("service"));
-  return service === requestUrl.hostname.toLowerCase();
+  return isCurrentHostService(requestUrl, requestUrl.searchParams.get("service"));
 }
 
 function brokerTokenResponse() {

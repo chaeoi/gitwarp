@@ -1,4 +1,5 @@
 import { withCors } from "./http.js";
+import { getPublicOrigin, getPublicService } from "./public-url.js";
 
 export function registryPingResponse(request, requestUrl) {
   if (!request.headers.has("Authorization")) {
@@ -8,7 +9,7 @@ export function registryPingResponse(request, requestUrl) {
         headers: {
           "Content-Type": "application/json",
           "Docker-Distribution-Api-Version": "registry/2.0",
-          "WWW-Authenticate": `Bearer realm="${requestUrl.origin}/token",service="${requestUrl.hostname}"`,
+          "WWW-Authenticate": `Bearer realm="${getPublicOrigin(requestUrl)}/token",service="${getPublicService(requestUrl)}"`,
           "X-Registry-Name": "GitWarp",
           "X-Registry-Upstream": "multi",
           "X-Registry-Cache": "BYPASS",

@@ -35,6 +35,18 @@ docker pull gitwarp.pages.dev/us-docker.pkg.dev/project/repo/image:tag
 
 只做拉取代理，不支持 push、delete、upload。带认证的请求不会被缓存。
 
+## 自定义域名
+
+绑定自定义域名后，前端示例会根据浏览器当前 `location.origin` 自动替换为新域名；Docker Registry 认证挑战里的 `realm` 和 `service` 也会使用当前请求域名。因此 `https://mirror.example.com/alpine:latest`、`https://mirror.example.com/ghcr.io/owner/image:tag` 这类路径可以直接工作。
+
+如果用作 Docker Hub mirror，把自定义域名写进 Docker 配置即可：
+
+```json
+{
+  "registry-mirrors": ["https://mirror.example.com"]
+}
+```
+
 ## 项目结构
 
 参考 `github.com/chaeoi/speedtest` 的 Pages 项目布局，静态网站直接放在根目录，函数逻辑按职责拆到 `functions/_lib`：
@@ -56,6 +68,7 @@ docker pull gitwarp.pages.dev/us-docker.pkg.dev/project/repo/image:tag
 │       ├── handler.js
 │       ├── http.js
 │       ├── path.js
+│       ├── public-url.js
 │       ├── registries.js
 │       ├── responses.js
 │       ├── routes.js
@@ -67,6 +80,12 @@ docker pull gitwarp.pages.dev/us-docker.pkg.dev/project/repo/image:tag
 
 ```bash
 npm run dev
+```
+
+测试：
+
+```bash
+npm test
 ```
 
 部署：

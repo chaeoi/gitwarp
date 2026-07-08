@@ -33,7 +33,18 @@ function selectAuthRoute(requestUrl, env) {
   }
 
   const service = normalizeRegistryValue(requestUrl.searchParams.get("service"));
-  const registry = findRegistryByService(service) || findRegistryByTokenPath(requestUrl.pathname);
+  const serviceRegistry = findRegistryByService(service);
+  if (service && !serviceRegistry) {
+    return {
+      error: {
+        error: "unknown_auth_service",
+        message: "Token requests must use this site's service value or a supported upstream registry service.",
+      },
+      status: 400,
+    };
+  }
+
+  const registry = serviceRegistry || findRegistryByTokenPath(requestUrl.pathname);
   const selected = registry || getDefaultRegistry(env);
 
   return {
