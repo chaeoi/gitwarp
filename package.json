@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler pages dev public --compatibility-date=2026-05-27",
-    "deploy": "wrangler pages deploy public --project-name gitwarp"
+    "dev": "wrangler pages dev . --compatibility-date=2026-05-27",
+    "deploy": "wrangler pages deploy . --project-name gitwarp"
   }
 }

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GitWarp</title>
+    <meta
+      name="description"
+      content="GitWarp is a pull-only Docker registry proxy for Docker Hub, GHCR, Quay, GCR, MCR, ECR Public, GitLab, and more."
+    />
+    <meta name="theme-color" content="#f8faf7" />
+    <link rel="icon" href="/assets/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/css/main.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div class="brand-mark" aria-hidden="true">
+          <span>G</span>
+        </div>
+        <div>
+          <p class="eyebrow">Pull-only registry proxy</p>
+          <h1>GitWarp</h1>
+        </div>
+      </header>
+
+      <section class="quick-start" aria-labelledby="quick-start-title">
+        <div class="section-head">
+          <h2 id="quick-start-title">快速使用</h2>
+          <p>把当前站点域名加到镜像名前面，然后照常执行 Docker pull。</p>
+        </div>
+
+        <div class="command-list" aria-label="Docker pull examples">
+          <div class="command-row">
+            <code data-template="{origin}/alpine:latest">gitwarp.pages.dev/alpine:latest</code>
+            <button type="button" data-copy>Copy</button>
+          </div>
+          <div class="command-row">
+            <code data-template="{origin}/library/nginx:latest">gitwarp.pages.dev/library/nginx:latest</code>
+            <button type="button" data-copy>Copy</button>
+          </div>
+          <div class="command-row">
+            <code data-template="{origin}/ghcr.io/owner/image:tag">gitwarp.pages.dev/ghcr.io/owner/image:tag</code>
+            <button type="button" data-copy>Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="registry-section" aria-labelledby="registry-title">
+        <div class="section-head">
+          <h2 id="registry-title">Registry 路径</h2>
+          <p>Docker Hub 默认走根路径，其他 registry 保留原始 host。</p>
+        </div>
+
+        <div class="registry-grid">
+          <article>
+            <strong>Docker Hub</strong>
+            <code data-template="{origin}/alpine:latest">gitwarp.pages.dev/alpine:latest</code>
+          </article>
+          <article>
+            <strong>GHCR</strong>
+            <code data-template="{origin}/ghcr.io/owner/image:tag">gitwarp.pages.dev/ghcr.io/owner/image:tag</code>
+          </article>
+          <article>
+            <strong>Quay</strong>
+            <code data-template="{origin}/quay.io/prometheus/prometheus:latest">gitwarp.pages.dev/quay.io/prometheus/prometheus:latest</code>
+          </article>
+          <article>
+            <strong>Kubernetes</strong>
+            <code data-template="{origin}/registry.k8s.io/pause:3.9">gitwarp.pages.dev/registry.k8s.io/pause:3.9</code>
+          </article>
+          <article>
+            <strong>MCR</strong>
+            <code data-template="{origin}/mcr.microsoft.com/dotnet/runtime:8.0">gitwarp.pages.dev/mcr.microsoft.com/dotnet/runtime:8.0</code>
+          </article>
+          <article>
+            <strong>ECR Public</strong>
+            <code data-template="{origin}/public.ecr.aws/nginx/nginx:latest">gitwarp.pages.dev/public.ecr.aws/nginx/nginx:latest</code>
+          </article>
+        </div>
+      </section>
+
+      <section class="mirror-section" aria-labelledby="mirror-title">
+        <div class="section-head">
+          <h2 id="mirror-title">Docker Hub Mirror</h2>
+          <p>也可以把当前站点设置成 Docker Hub registry mirror。</p>
+        </div>
+        <pre><code data-template='{
+  "registry-mirrors": ["{origin}"]
+}'>{
+  "registry-mirrors": ["https://gitwarp.pages.dev"]
+}</code></pre>
+      </section>
+
+      <footer>
+        <span>Pull only</span>
+        <span>No push/delete/upload</span>
+        <span>Authenticated requests bypass cache</span>
+      </footer>
+    </main>
+
+    <script src="/assets/js/main.js"></script>
+  </body>
+</html>
