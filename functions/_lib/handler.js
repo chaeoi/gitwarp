@@ -1,6 +1,7 @@
 import { READ_METHODS } from "./constants.js";
 import { maybeBrokerTokenResponse } from "./auth.js";
 import { buildCacheOptions } from "./cache.js";
+import { maybeGitHubSourceResponse } from "./github-source.js";
 import { buildUpstreamHeaders, json, withCors } from "./http.js";
 import { registryPingResponse } from "./responses.js";
 import { isRegistryPing, selectRoute } from "./routes.js";
@@ -27,6 +28,11 @@ export async function handleRequest(context) {
 
   if (shouldServeAsset(requestUrl, request)) {
     return env.ASSETS.fetch(request);
+  }
+
+  const githubSource = await maybeGitHubSourceResponse(request, requestUrl, env);
+  if (githubSource) {
+    return githubSource;
   }
 
   if (isRegistryPing(requestUrl.pathname)) {

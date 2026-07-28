@@ -6,7 +6,7 @@
     <title>GitWarp</title>
     <meta
       name="description"
-      content="GitWarp is a pull-only Docker registry proxy for Docker Hub, GHCR, Quay, GCR, MCR, ECR Public, GitLab, and more."
+      content="GitWarp accelerates pull-only Docker registry requests and public GitHub source downloads."
     />
     <meta name="theme-color" content="#f8faf7" />
     <link rel="icon" href="/assets/icon.svg" type="image/svg+xml" />
@@ -24,7 +24,7 @@
           <span>G</span>
         </div>
         <div>
-          <p class="eyebrow">Pull-only registry proxy</p>
+          <p class="eyebrow">Registry and source proxy</p>
           <h1>GitWarp</h1>
         </div>
       </header>
@@ -46,6 +46,24 @@
           </div>
           <div class="command-row">
             <code data-template="{origin}/ghcr.io/owner/image:tag">当前域名/ghcr.io/owner/image:tag</code>
+            <button type="button" data-copy>Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="source-section" aria-labelledby="source-title">
+        <div class="section-head">
+          <h2 id="source-title">GitHub 源码</h2>
+          <p>在 Raw 文件或 codeload 源码包地址前加上当前站点域名。</p>
+        </div>
+
+        <div class="command-list" aria-label="GitHub source download examples">
+          <div class="command-row">
+            <code data-template="{origin}/raw.githubusercontent.com/owner/repo/main/path/to/file">当前域名/raw.githubusercontent.com/owner/repo/main/path/to/file</code>
+            <button type="button" data-copy>Copy</button>
+          </div>
+          <div class="command-row">
+            <code data-template="{origin}/codeload.github.com/owner/repo/zip/refs/heads/main">当前域名/codeload.github.com/owner/repo/zip/refs/heads/main</code>
             <button type="button" data-copy>Copy</button>
           </div>
         </div>
@@ -99,6 +117,7 @@
 
       <footer>
         <span>Pull only</span>
+        <span>Public GitHub source downloads</span>
         <span>No push/delete/upload</span>
         <span>Authenticated requests bypass cache</span>
       </footer>

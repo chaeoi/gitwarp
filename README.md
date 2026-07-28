@@ -1,6 +1,6 @@
 # GitWarp
 
-把部署域名加到镜像名前面即可。下面以 `gitwarp.pages.dev` 为例。
+同时提供 Docker Registry 拉取代理和 GitHub 公共源码下载代理。下面以 `gitwarp.pages.dev` 为例。
 
 ## 使用
 
@@ -35,6 +35,29 @@ docker pull gitwarp.pages.dev/us-docker.pkg.dev/project/repo/image:tag
 
 只做拉取代理，不支持 push、delete、upload。带认证的请求不会被缓存。
 
+## GitHub 源码加速
+
+把原始下载域名放到部署域名后面。支持所有公开仓库的 Raw 文件：
+
+```bash
+curl -fLO https://gitwarp.pages.dev/raw.githubusercontent.com/owner/repo/main/path/to/file
+```
+
+对应的原始地址是：
+
+```text
+https://raw.githubusercontent.com/owner/repo/main/path/to/file
+```
+
+源码 ZIP 或 TAR 包通过 `codeload.github.com` 下载：
+
+```bash
+curl -fL https://gitwarp.pages.dev/codeload.github.com/owner/repo/zip/refs/heads/main -o repo.zip
+curl -fL https://gitwarp.pages.dev/codeload.github.com/owner/repo/tar.gz/refs/tags/v1.0.0 -o repo.tar.gz
+```
+
+只允许 `raw.githubusercontent.com` 和 `codeload.github.com` 两个固定上游，不接受任意目标域名。分支和 Tag 默认缓存 5 分钟，使用 40 位 commit SHA 的不可变地址缓存 30 天。
+
 ## 自定义域名
 
 绑定自定义域名后，前端示例会根据浏览器当前 `location.origin` 自动替换为新域名；Docker Registry 认证挑战里的 `realm` 和 `service` 也会使用当前请求域名。因此 `https://mirror.example.com/alpine:latest`、`https://mirror.example.com/ghcr.io/owner/image:tag` 这类路径可以直接工作。
@@ -65,6 +88,7 @@ docker pull gitwarp.pages.dev/us-docker.pkg.dev/project/repo/image:tag
 │       ├── cache.js
 │       ├── constants.js
 │       ├── dockerhub.js
+│       ├── github-source.js
 │       ├── handler.js
 │       ├── http.js
 │       ├── path.js

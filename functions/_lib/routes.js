@@ -101,14 +101,11 @@ function selectV2Route(requestUrl, parts, env) {
 }
 
 function isAuthRequest(requestUrl) {
-  if (requestUrl.searchParams.has("service") && requestUrl.searchParams.has("scope")) {
+  if (!TOKEN_PATH_REGISTRIES.has(requestUrl.pathname)) {
+    return false;
+  }
+  if (requestUrl.searchParams.has("service")) {
     return true;
   }
-  if (requestUrl.searchParams.has("service") && TOKEN_PATH_REGISTRIES.has(requestUrl.pathname)) {
-    return true;
-  }
-  if (TOKEN_PATH_REGISTRIES.has(requestUrl.pathname)) {
-    return !requestUrl.pathname.startsWith("/v2/") || requestUrl.searchParams.has("scope");
-  }
-  return requestUrl.pathname === "/proxy_auth" || requestUrl.pathname === "/proxy_auth/";
+  return !requestUrl.pathname.startsWith("/v2/") || requestUrl.searchParams.has("scope");
 }

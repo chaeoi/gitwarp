@@ -21,7 +21,7 @@ export function withCors(response) {
   headers.set("Access-Control-Allow-Headers", "Authorization, Accept, Content-Type, Range");
   headers.set(
     "Access-Control-Expose-Headers",
-    "Docker-Content-Digest, Docker-Distribution-Api-Version, Location, WWW-Authenticate, X-Registry-Cache, X-Registry-Name, X-Registry-Upstream",
+    "Accept-Ranges, Content-Disposition, Content-Range, Docker-Content-Digest, Docker-Distribution-Api-Version, ETag, Last-Modified, Location, WWW-Authenticate, X-GitHub-Source-Cache, X-GitHub-Source-Upstream, X-Registry-Cache, X-Registry-Name, X-Registry-Upstream",
   );
 
   return new Response(response.body, {
