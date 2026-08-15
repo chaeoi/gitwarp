@@ -35,7 +35,7 @@ docker pull gitwarp.pages.dev/us-docker.pkg.dev/project/repo/image:tag
 
 只做拉取代理，不支持 push、delete、upload。带认证的请求不会被缓存。
 
-## GitHub 源码加速
+## GitHub 下载加速
 
 把原始下载域名放到部署域名后面。支持所有公开仓库的 Raw 文件：
 
@@ -56,7 +56,14 @@ curl -fL https://gitwarp.pages.dev/codeload.github.com/owner/repo/zip/refs/heads
 curl -fL https://gitwarp.pages.dev/codeload.github.com/owner/repo/tar.gz/refs/tags/v1.0.0 -o repo.tar.gz
 ```
 
-只允许 `raw.githubusercontent.com` 和 `codeload.github.com` 两个固定上游，不接受任意目标域名。分支和 Tag 默认缓存 5 分钟，使用 40 位 commit SHA 的不可变地址缓存 30 天。
+Release 附件同样保留原始域名和完整路径：
+
+```bash
+curl -fLO https://gitwarp.pages.dev/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64
+curl -fLO https://gitwarp.pages.dev/github.com/owner/repo/releases/latest/download/asset-name
+```
+
+只允许 `raw.githubusercontent.com`、`codeload.github.com`，以及 `github.com` 下的公开 Release 附件路径，不接受任意目标域名或其他 GitHub 页面。分支、Tag 和 Release 附件默认缓存 5 分钟，使用 40 位 commit SHA 的不可变地址缓存 30 天。
 
 ## 自定义域名
 

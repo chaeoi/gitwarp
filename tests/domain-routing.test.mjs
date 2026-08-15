@@ -83,6 +83,38 @@ test("codeload GitHub paths proxy source archives", () => {
   assert.equal(upstreamUrl.toString(), "https://codeload.github.com/owner/repo/zip/refs/heads/main");
 });
 
+test("GitHub release asset paths proxy versioned downloads", () => {
+  const requestUrl = new URL(
+    "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64?download=1",
+  );
+  const route = selectGitHubSourceRoute(requestUrl);
+  const upstreamUrl = buildGitHubSourceUrl(requestUrl, route);
+
+  assert.equal(route.upstreamHost, "github.com");
+  assert.equal(
+    route.upstreamPathname,
+    "/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+  );
+  assert.equal(
+    upstreamUrl.toString(),
+    "https://github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64?download=1",
+  );
+  assert.equal(getGitHubSourceCacheTtl(upstreamUrl), 60 * 5);
+});
+
+test("GitHub latest release asset paths are supported", () => {
+  const requestUrl = new URL(
+    "https://mirror.example.com/github.com/owner/repo/releases/latest/download/app-linux-amd64",
+  );
+  const route = selectGitHubSourceRoute(requestUrl);
+
+  assert.equal(route.upstreamHost, "github.com");
+  assert.equal(
+    buildGitHubSourceUrl(requestUrl, route).toString(),
+    "https://github.com/owner/repo/releases/latest/download/app-linux-amd64",
+  );
+});
+
 test("GitHub source routing uses exact allowlisted host prefixes", () => {
   assert.equal(
     selectGitHubSourceRoute(new URL("https://mirror.example.com/raw.githubusercontent.com.evil/file")),
@@ -95,6 +127,28 @@ test("GitHub source routing uses exact allowlisted host prefixes", () => {
   );
   assert.equal(missingPath.status, 400);
   assert.equal(missingPath.error.error, "github_source_path_required");
+});
+
+test("GitHub web pages outside release asset downloads are rejected", () => {
+  for (const pathname of [
+    "/github.com/owner/repo",
+    "/github.com/owner/repo/releases",
+    "/github.com/owner/repo/archive/refs/heads/main.zip",
+    "/github.com/owner/repo/releases/download/tag",
+  ]) {
+    const route = selectGitHubSourceRoute(new URL(`https://mirror.example.com${pathname}`));
+    assert.equal(route.status, 400);
+    assert.equal(route.error.error, "github_release_path_invalid");
+  }
+
+  assert.equal(
+    selectGitHubSourceRoute(
+      new URL(
+        "https://mirror.example.com/github.com.evil/owner/repo/releases/download/tag/asset",
+      ),
+    ),
+    null,
+  );
 });
 
 test("commit-addressed GitHub sources receive the immutable cache TTL", () => {
@@ -178,6 +232,39 @@ test("GitHub source requests strip credentials and omit Docker response headers"
     assert.equal(response.headers.get("Docker-Distribution-Api-Version"), null);
     assert.equal(response.headers.get("X-GitHub-Source-Upstream"), "raw.githubusercontent.com");
     assert.equal(await response.text(), "source");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("GitHub release requests follow the upstream asset redirect", async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedRequest;
+
+  globalThis.fetch = async (upstreamRequest) => {
+    capturedRequest = upstreamRequest;
+    return new Response("release", {
+      headers: {
+        "Content-Disposition": "attachment; filename=baize-agent-linux-arm64",
+      },
+    });
+  };
+
+  try {
+    const response = await request(
+      "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+      { headers: { Range: "bytes=0-99" } },
+    );
+
+    assert.equal(
+      capturedRequest.url,
+      "https://github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+    );
+    assert.equal(capturedRequest.redirect, "follow");
+    assert.equal(capturedRequest.headers.get("Range"), "bytes=0-99");
+    assert.equal(response.headers.get("X-GitHub-Source-Upstream"), "github.com");
+    assert.equal(response.headers.get("Content-Disposition"), "attachment; filename=baize-agent-linux-arm64");
+    assert.equal(await response.text(), "release");
   } finally {
     globalThis.fetch = originalFetch;
   }

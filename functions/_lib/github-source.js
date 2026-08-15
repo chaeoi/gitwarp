@@ -1,6 +1,14 @@
 import { buildUpstreamHeaders, json, withCors } from "./http.js";
 
-const GITHUB_SOURCE_HOSTS = new Set(["raw.githubusercontent.com", "codeload.github.com"]);
+const GITHUB_SOURCE_HOSTS = new Set([
+  "raw.githubusercontent.com",
+  "codeload.github.com",
+  "github.com",
+]);
+const GITHUB_RELEASE_PATH_PATTERNS = [
+  /^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/[^/]+$/,
+  /^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+$/,
+];
 const DEFAULT_CACHE_TTL = 60 * 5;
 const IMMUTABLE_CACHE_TTL = 60 * 60 * 24 * 30;
 const COMMIT_SHA_PATTERN = /^[a-f0-9]{40}$/i;
@@ -73,10 +81,25 @@ export function selectGitHubSourceRoute(requestUrl) {
     };
   }
 
+  const upstreamPathname = pathname.slice(hostEnd);
+  if (
+    host === "github.com" &&
+    !GITHUB_RELEASE_PATH_PATTERNS.some((pattern) => pattern.test(upstreamPathname))
+  ) {
+    return {
+      error: {
+        error: "github_release_path_invalid",
+        message:
+          "Only GitHub release asset paths under /<owner>/<repo>/releases/download/ or /releases/latest/download/ are supported.",
+      },
+      status: 400,
+    };
+  }
+
   return {
     kind: "github-source",
     upstreamHost: host,
-    upstreamPathname: pathname.slice(hostEnd),
+    upstreamPathname,
   };
 }
 
@@ -103,7 +126,12 @@ export function buildGitHubSourceCacheOptions(request, upstreamUrl, env) {
 
 export function getGitHubSourceCacheTtl(upstreamUrl) {
   const parts = upstreamUrl.pathname.split("/").filter(Boolean);
-  const ref = upstreamUrl.hostname === "raw.githubusercontent.com" ? parts[2] : parts[3];
+  let ref;
+  if (upstreamUrl.hostname === "raw.githubusercontent.com") {
+    ref = parts[2];
+  } else if (upstreamUrl.hostname === "codeload.github.com") {
+    ref = parts[3];
+  }
   return COMMIT_SHA_PATTERN.test(ref || "") ? IMMUTABLE_CACHE_TTL : DEFAULT_CACHE_TTL;
 }
 
