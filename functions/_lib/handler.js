@@ -30,7 +30,7 @@ export async function handleRequest(context) {
     return env.ASSETS.fetch(request);
   }
 
-  const githubSource = await maybeGitHubSourceResponse(request, requestUrl, env);
+  const githubSource = await maybeGitHubSourceResponse(request, requestUrl, env, context);
   if (githubSource) {
     return githubSource;
   }

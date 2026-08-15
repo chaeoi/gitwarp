@@ -63,7 +63,7 @@ curl -fLO https://gitwarp.pages.dev/github.com/chaeoi/baize/releases/download/20
 curl -fLO https://gitwarp.pages.dev/github.com/owner/repo/releases/latest/download/asset-name
 ```
 
-只允许 `raw.githubusercontent.com`、`codeload.github.com`，以及 `github.com` 下的公开 Release 附件路径，不接受任意目标域名或其他 GitHub 页面。分支、Tag 和 Release 附件默认缓存 5 分钟，使用 40 位 commit SHA 的不可变地址缓存 30 天。
+只允许 `raw.githubusercontent.com`、`codeload.github.com`，以及 `github.com` 下的公开 Release 附件路径，不接受任意目标域名或其他 GitHub 页面。分支、Tag 和 `latest` Release 附件默认缓存 5 分钟，固定 Tag 的 Release 附件缓存 24 小时，使用 40 位 commit SHA 的不可变地址缓存 30 天。
 
 ## 自定义域名
 

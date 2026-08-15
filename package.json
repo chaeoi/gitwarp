@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npx --yes wrangler@latest pages dev . --compatibility-date=2026-05-27",
-    "deploy": "npx --yes wrangler@latest pages deploy . --project-name gitwarp",
+    "dev": "wrangler pages dev . --compatibility-date=2026-05-27",
+    "deploy": "CLOUDFLARE_ACCOUNT_ID=5f3e07cc67c13a6a0a2d48a9d2b0ffe0 wrangler pages deploy . --project-name gitwarp-edge-2592341fe9",
     "test": "node tests/domain-routing.test.mjs"
   }
 }

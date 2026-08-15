@@ -5,15 +5,20 @@ const GITHUB_SOURCE_HOSTS = new Set([
   "codeload.github.com",
   "github.com",
 ]);
+const VERSIONED_RELEASE_PATH_PATTERN =
+  /^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/[^/]+$/;
+const LATEST_RELEASE_PATH_PATTERN =
+  /^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+$/;
 const GITHUB_RELEASE_PATH_PATTERNS = [
-  /^\/[^/]+\/[^/]+\/releases\/download\/[^/]+\/[^/]+$/,
-  /^\/[^/]+\/[^/]+\/releases\/latest\/download\/[^/]+$/,
+  VERSIONED_RELEASE_PATH_PATTERN,
+  LATEST_RELEASE_PATH_PATTERN,
 ];
 const DEFAULT_CACHE_TTL = 60 * 5;
+const RELEASE_CACHE_TTL = 60 * 60 * 24;
 const IMMUTABLE_CACHE_TTL = 60 * 60 * 24 * 30;
 const COMMIT_SHA_PATTERN = /^[a-f0-9]{40}$/i;
 
-export async function maybeGitHubSourceResponse(request, requestUrl, env) {
+export async function maybeGitHubSourceResponse(request, requestUrl, env, context) {
   const route = selectGitHubSourceRoute(requestUrl);
   if (!route) {
     return null;
@@ -23,6 +28,12 @@ export async function maybeGitHubSourceResponse(request, requestUrl, env) {
   }
 
   const upstreamUrl = buildGitHubSourceUrl(requestUrl, route);
+  const cachedResponse = await matchGitHubSourceCache(request, requestUrl, env);
+  if (cachedResponse) {
+    const response = request.method === "HEAD" ? withoutBody(cachedResponse) : cachedResponse;
+    return withCors(addGitHubSourceHeaders(response, upstreamUrl, "HIT"));
+  }
+
   const upstreamHeaders = buildUpstreamHeaders(request.headers);
   upstreamHeaders.delete("Authorization");
   upstreamHeaders.delete("Cookie");
@@ -59,7 +70,9 @@ export async function maybeGitHubSourceResponse(request, requestUrl, env) {
     clearTimeout(timeoutId);
   }
 
-  return withCors(addGitHubSourceHeaders(upstreamResponse, upstreamUrl));
+  const response = withCors(addGitHubSourceHeaders(upstreamResponse, upstreamUrl));
+  scheduleGitHubSourceCache(request, requestUrl, env, context, response);
+  return response;
 }
 
 export function selectGitHubSourceRoute(requestUrl) {
@@ -120,11 +133,17 @@ export function buildGitHubSourceCacheOptions(request, upstreamUrl, env) {
   return {
     cacheEverything: true,
     cacheTtl: ttl,
-    cacheKey: upstreamUrl.toString(),
   };
 }
 
 export function getGitHubSourceCacheTtl(upstreamUrl) {
+  if (
+    upstreamUrl.hostname === "github.com" &&
+    VERSIONED_RELEASE_PATH_PATTERN.test(upstreamUrl.pathname)
+  ) {
+    return RELEASE_CACHE_TTL;
+  }
+
   const parts = upstreamUrl.pathname.split("/").filter(Boolean);
   let ref;
   if (upstreamUrl.hostname === "raw.githubusercontent.com") {
@@ -135,12 +154,15 @@ export function getGitHubSourceCacheTtl(upstreamUrl) {
   return COMMIT_SHA_PATTERN.test(ref || "") ? IMMUTABLE_CACHE_TTL : DEFAULT_CACHE_TTL;
 }
 
-function addGitHubSourceHeaders(response, upstreamUrl) {
+function addGitHubSourceHeaders(response, upstreamUrl, cacheStatus = null) {
   const headers = new Headers(response.headers);
   const ttl = getGitHubSourceCacheTtl(upstreamUrl);
 
   headers.set("X-GitHub-Source-Upstream", upstreamUrl.hostname);
-  headers.set("X-GitHub-Source-Cache", headers.get("CF-Cache-Status") || "DYNAMIC");
+  headers.set(
+    "X-GitHub-Source-Cache",
+    cacheStatus || headers.get("CF-Cache-Status") || "DYNAMIC",
+  );
 
   if (isCacheableResponse(response)) {
     headers.set("Cache-Control", `public, max-age=${ttl}`);
@@ -150,6 +172,65 @@ function addGitHubSourceHeaders(response, upstreamUrl) {
     status: response.status,
     statusText: response.statusText,
     headers,
+  });
+}
+
+async function matchGitHubSourceCache(request, requestUrl, env) {
+  const cache = getGitHubSourceCache(request, env);
+  if (!cache) {
+    return null;
+  }
+
+  try {
+    return await cache.match(buildGitHubSourceCacheRequest(requestUrl, request.headers.get("Range")));
+  } catch {
+    return null;
+  }
+}
+
+function scheduleGitHubSourceCache(request, requestUrl, env, context, response) {
+  const cache = getGitHubSourceCache(request, env);
+  if (
+    !cache ||
+    request.method !== "GET" ||
+    request.headers.has("Range") ||
+    response.status !== 200 ||
+    !isCacheableResponse(response) ||
+    typeof context?.waitUntil !== "function"
+  ) {
+    return;
+  }
+
+  const cacheRequest = buildGitHubSourceCacheRequest(requestUrl);
+  const cacheWrite = cache.put(cacheRequest, response.clone()).catch(() => undefined);
+  context.waitUntil(cacheWrite);
+}
+
+function getGitHubSourceCache(request, env) {
+  const mode = String(env.CACHE_MODE || "public").toLowerCase();
+  if (
+    mode === "off" ||
+    mode === "bypass" ||
+    (request.method !== "GET" && request.method !== "HEAD")
+  ) {
+    return null;
+  }
+  return globalThis.caches?.default || null;
+}
+
+function buildGitHubSourceCacheRequest(requestUrl, range = null) {
+  const headers = new Headers();
+  if (range) {
+    headers.set("Range", range);
+  }
+  return new Request(requestUrl.toString(), { method: "GET", headers });
+}
+
+function withoutBody(response) {
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
   });
 }
 

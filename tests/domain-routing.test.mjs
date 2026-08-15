@@ -99,7 +99,7 @@ test("GitHub release asset paths proxy versioned downloads", () => {
     upstreamUrl.toString(),
     "https://github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64?download=1",
   );
-  assert.equal(getGitHubSourceCacheTtl(upstreamUrl), 60 * 5);
+  assert.equal(getGitHubSourceCacheTtl(upstreamUrl), 60 * 60 * 24);
 });
 
 test("GitHub latest release asset paths are supported", () => {
@@ -112,6 +112,10 @@ test("GitHub latest release asset paths are supported", () => {
   assert.equal(
     buildGitHubSourceUrl(requestUrl, route).toString(),
     "https://github.com/owner/repo/releases/latest/download/app-linux-amd64",
+  );
+  assert.equal(
+    getGitHubSourceCacheTtl(buildGitHubSourceUrl(requestUrl, route)),
+    60 * 5,
   );
 });
 
@@ -267,5 +271,178 @@ test("GitHub release requests follow the upstream asset redirect", async () => {
     assert.equal(await response.text(), "release");
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("GitHub source cache serves a stored complete response", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  let capturedCacheRequest;
+
+  globalThis.caches = {
+    default: {
+      match: async (cacheRequest) => {
+        capturedCacheRequest = cacheRequest;
+        return new Response("cached release", {
+          headers: {
+            "Content-Length": "14",
+            "Content-Type": "application/octet-stream",
+          },
+        });
+      },
+      put: async () => assert.fail("cache writes are not expected on a cache hit"),
+    },
+  };
+  globalThis.fetch = async () => assert.fail("upstream fetch is not expected on a cache hit");
+
+  try {
+    const response = await request(
+      "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+    );
+
+    assert.equal(capturedCacheRequest.url, "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64");
+    assert.equal(response.headers.get("X-GitHub-Source-Cache"), "HIT");
+    assert.equal(response.headers.get("X-GitHub-Source-Upstream"), "github.com");
+    assert.equal(await response.text(), "cached release");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
+  }
+});
+
+test("GitHub source cache writes complete GET responses after the response starts", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  let cachedRequest;
+  let cachedBody;
+  const backgroundTasks = [];
+
+  globalThis.caches = {
+    default: {
+      match: async () => undefined,
+      put: async (cacheRequest, response) => {
+        cachedRequest = cacheRequest;
+        cachedBody = await response.text();
+      },
+    },
+  };
+  globalThis.fetch = async () => new Response("release body", { status: 200 });
+
+  try {
+    const response = await handleRequest({
+      request: new Request(
+        "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+      ),
+      env,
+      waitUntil: (task) => backgroundTasks.push(task),
+    });
+
+    assert.equal(await response.text(), "release body");
+    assert.equal(backgroundTasks.length, 1);
+    await Promise.all(backgroundTasks);
+    assert.equal(cachedRequest.url, "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64");
+    assert.equal(cachedBody, "release body");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
+  }
+});
+
+test("GitHub source cache does not store cold Range responses", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  let matchedRequest;
+  let cachePutCalls = 0;
+  const backgroundTasks = [];
+
+  globalThis.caches = {
+    default: {
+      match: async (cacheRequest) => {
+        matchedRequest = cacheRequest;
+        return undefined;
+      },
+      put: async () => {
+        cachePutCalls += 1;
+      },
+    },
+  };
+  globalThis.fetch = async () =>
+    new Response("r", {
+      status: 206,
+      headers: {
+        "Content-Length": "1",
+        "Content-Range": "bytes 0-0/6422676",
+      },
+    });
+
+  try {
+    const response = await handleRequest({
+      request: new Request(
+        "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+        { headers: { Range: "bytes=0-0" } },
+      ),
+      env,
+      waitUntil: (task) => backgroundTasks.push(task),
+    });
+
+    assert.equal(matchedRequest.headers.get("Range"), "bytes=0-0");
+    assert.equal(response.status, 206);
+    assert.equal(await response.text(), "r");
+    assert.equal(backgroundTasks.length, 0);
+    assert.equal(cachePutCalls, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
+  }
+});
+
+test("GitHub source cache failures fall back to the upstream response", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = globalThis.caches;
+  const backgroundTasks = [];
+
+  globalThis.caches = {
+    default: {
+      match: async () => {
+        throw new Error("cache read failed");
+      },
+      put: async () => {
+        throw new Error("cache write failed");
+      },
+    },
+  };
+  globalThis.fetch = async () => new Response("upstream fallback", { status: 200 });
+
+  try {
+    const response = await handleRequest({
+      request: new Request(
+        "https://mirror.example.com/github.com/chaeoi/baize/releases/download/20260815/baize-agent-linux-arm64",
+      ),
+      env,
+      waitUntil: (task) => backgroundTasks.push(task),
+    });
+
+    assert.equal(await response.text(), "upstream fallback");
+    assert.equal(backgroundTasks.length, 1);
+    await Promise.all(backgroundTasks);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches === undefined) {
+      delete globalThis.caches;
+    } else {
+      globalThis.caches = originalCaches;
+    }
   }
 });
