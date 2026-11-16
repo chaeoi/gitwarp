@@ -1,0 +1,100 @@
+name: 自动发布 gitwarp
+'on':
+  push:
+    branches:
+    - main
+  workflow_dispatch: null
+concurrency:
+  group: gitwarp-release
+  cancel-in-progress: false
+  queue: max
+permissions:
+  contents: write
+jobs:
+  version:
+    name: 自动编号
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.number.outputs.version }}
+      released: ${{ steps.number.outputs.released }}
+      skip: ${{ steps.number.outputs.skip }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: 计算版本并创建标签
+      id: number
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        test "$GITHUB_REF" = refs/heads/main
+        python3 .github/scripts/version.py
+  build:
+    needs:
+    - version
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.released != 'true'
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 24
+    - name: 写入发布版本
+      run: python3 .github/scripts/set-version.py "$VERSION"
+    - name: 安装依赖
+      run: npm install --ignore-scripts
+    - name: 检查与构建
+      run: npm test
+    - name: 打包
+      run: |
+        mkdir -p "$RUNNER_TEMP/package" "$RUNNER_TEMP/release"
+        git ls-files -z | tar --null -T - -cf - | tar -xf - -C "$RUNNER_TEMP/package"
+        (cd "$RUNNER_TEMP/package" && zip -qr "$RUNNER_TEMP/release/gitwarp_${VERSION}_source.zip" .)
+    - uses: actions/upload-artifact@v7
+      with:
+        name: release-web
+        path: ${{ runner.temp }}/release/*.zip
+        if-no-files-found: error
+        retention-days: 7
+        overwrite: true
+  release:
+    name: 发布 GitHub Release
+    needs:
+    - version
+    - build
+    if: ${{ !cancelled() && needs.version.result == 'success' && needs.version.outputs.skip != 'true' && (needs.build.result
+      == 'success' || (needs.build.result == 'skipped' && needs.version.outputs.released == 'true')) }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRODUCT_NAME: GitWarp
+      RELEASE_ASSETS: gitwarp_${{ needs.version.outputs.version }}_source.zip SHA256SUMS
+      RELEASE_IMAGES: ''
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - name: 检查当前 Release 状态
+      id: state
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 .github/scripts/state.py
+    - name: 下载构建产物
+      if: steps.state.outputs.released != 'true'
+      uses: actions/download-artifact@v7
+      with:
+        pattern: release-*
+        merge-multiple: true
+        path: dist
+    - name: 生成校验和
+      if: steps.state.outputs.released != 'true'
+      run: |
+        set -euo pipefail
+        (cd dist && sha256sum * > SHA256SUMS)
+    - name: 发布或恢复 Release
+      id: publish
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 .github/scripts/publish.py
